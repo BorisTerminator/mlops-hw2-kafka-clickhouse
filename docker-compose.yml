@@ -1,0 +1,80 @@
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka
+    ports:
+      - "9094:9094"
+    environment:
+      # KRaft: один узел сам себе и брокер, и контроллер, Zookeeper не нужен
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # PLAINTEXT - для контейнеров внутри сети compose (kafka:9092)
+      # EXTERNAL  - для программ на хосте (localhost:9094)
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: clickhouse
+    ports:
+      - "8123:8123"   # HTTP-интерфейс
+      - "9000:9000"   # нативный протокол (clickhouse-client)
+    environment:
+      # пользователь default без пароля и с доступом по сети - только для учебного стенда
+      CLICKHOUSE_SKIP_USER_SETUP: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ./sql:/sql:ro
+      # при первом старте (пустой том) ClickHouse сам выполнит эти скрипты
+      - ./sql/01_ddl.sql:/docker-entrypoint-initdb.d/01_ddl.sql:ro
+      - ./sql/03_ddl_optimized.sql:/docker-entrypoint-initdb.d/03_ddl_optimized.sql:ro
+      - ./result:/result
+      - clickhouse_data:/var/lib/clickhouse
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    image: hw2-producer
+    # профиль load: продюсер не стартует от `docker compose up`,
+    # его запускают явно, чтобы случайно не залить данные дважды
+    profiles: ["load"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: transactions
+      CSV_PATH: /data/train.csv
+    volumes:
+      - ./data:/data:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse_data:

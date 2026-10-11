@@ -1,0 +1,5 @@
+data/
+result/
+.git/
+.venv/
+__pycache__/
